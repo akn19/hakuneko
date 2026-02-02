@@ -9,24 +9,16 @@ export default class Mikoroku extends Connector {
         this.tags = ['manga', 'scanlation', 'indonesian'];
         this.url = 'https://www.mikoroku.my.id';
         this.queryMangaTitle = 'h1[itemprop="name"]';
-        this.mangaCategory = 'Series';
-        this.chapterCategory = 'Chapter';
-        // Add referer header like Mihon does
-        this.requestOptions.headers.set('Referer', this.url + '/');
     }
 
     async _getMangas() {
         const mangalist = [];
-        const feedUrl = new URL(`/feeds/posts/default/-/${this.mangaCategory}?orderby=published&alt=json&max-results=999`, this.url);
+        const feedUrl = new URL('/feeds/posts/default/-/Series?orderby=published&alt=json&max-results=999', this.url);
         const request = new Request(feedUrl, this.requestOptions);
         const data = await this.fetchJSON(request);
 
         if (data.feed && data.feed.entry) {
             for (const entry of data.feed.entry) {
-                // Filter by manga category
-                const hasCategory = entry.category && entry.category.some(cat => cat.term === this.mangaCategory);
-                if (!hasCategory) continue;
-
                 const altLink = entry.link.find(link => link.rel === 'alternate');
                 if (altLink) {
                     mangalist.push({
