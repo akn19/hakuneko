@@ -35,21 +35,99 @@ export default class Mikoroku extends Connector {
         const request = new Request(new URL(manga.id, this.url), this.requestOptions);
 
         // Extract chapters directly from the manga page HTML
-        // Chapters are embedded in #chapterContainer as .chap-btn links
+        // Three possible structures:
+        // 1. div.chapter-list-section div#chapterContainer a.chap-btn span.chap-num
+        // 2. div#download div.index-list a
+        // 3. div#clwd ul li div.eph-num a span.chapternum
         const script = `
             new Promise(resolve => {
-                const chapters = [];
-                const chapterLinks = document.querySelectorAll('#chapterContainer a.chap-btn');
-                chapterLinks.forEach(link => {
-                    const chapNum = link.querySelector('.chap-num');
-                    if (chapNum && link.href) {
-                        chapters.push({
-                            id: link.href,
-                            title: chapNum.textContent.trim()
+                // Normalize chapter title to standard "Chapter X" format
+                const normalizeChapterTitle = (title) => {
+                    if (!title) return title;
+
+                    // Remove extra whitespace and trim
+                    const cleanTitle = title.trim().replace(/\s+/g, ' ');
+
+                    // Match patterns like "Ch. 03", "Ch 03", "Chapter 03", "ch.03", etc.
+                    const match = cleanTitle.match(/(?:ch\.?|chapter)[\s\.]*(\d+(?:\.\d+)?)/i);
+                    if (match) {
+                        const num = parseFloat(match[1]);
+                        return 'Chapter ' + num;
+                    }
+
+                    return title;
+                };
+
+                const getChapters = () => {
+                    const chapters = [];
+
+                    // Try first structure: chapterContainer
+                    let chapterLinks = document.querySelectorAll('div.chapter-list-section div#chapterContainer a.chap-btn, #chapterContainer a.chap-btn');
+                    if (chapterLinks.length > 0) {
+                        chapterLinks.forEach(link => {
+                            const chapNum = link.querySelector('span.chap-num, .chap-num');
+                            if (chapNum && link.href) {
+                                chapters.push({
+                                    id: link.href,
+                                    title: normalizeChapterTitle(chapNum.textContent.trim())
+                                });
+                            }
                         });
                     }
-                });
-                resolve(chapters);
+
+                    // Try second structure: index-list
+                    if (chapters.length === 0) {
+                        chapterLinks = document.querySelectorAll('div#download div.index-list a, div.index-list a');
+                        chapterLinks.forEach(link => {
+                            if (link.href && link.textContent) {
+                                chapters.push({
+                                    id: link.href,
+                                    title: normalizeChapterTitle(link.textContent.trim())
+                                });
+                            }
+                        });
+                    }
+
+                    // Try third structure: clwd epcheck
+                    if (chapters.length === 0) {
+                        chapterLinks = document.querySelectorAll('div#clwd ul li div.eph-num a');
+                        chapterLinks.forEach(link => {
+                            const chapNum = link.querySelector('span.chapternum');
+                            if (chapNum && link.href) {
+                                chapters.push({
+                                    id: link.href,
+                                    title: normalizeChapterTitle(chapNum.textContent.trim())
+                                });
+                            } else if (link.href && link.textContent) {
+                                chapters.push({
+                                    id: link.href,
+                                    title: normalizeChapterTitle(link.textContent.trim())
+                                });
+                            }
+                        });
+                    }
+
+                    return chapters;
+                };
+
+                // Try immediately first
+                let chapters = getChapters();
+                if (chapters.length > 0) {
+                    resolve(chapters);
+                    return;
+                }
+
+                // If no chapters found, wait and retry
+                let attempts = 0;
+                const maxAttempts = 10;
+                const interval = setInterval(() => {
+                    attempts++;
+                    chapters = getChapters();
+                    if (chapters.length > 0 || attempts >= maxAttempts) {
+                        clearInterval(interval);
+                        resolve(chapters);
+                    }
+                }, 500);
             });
         `;
 
