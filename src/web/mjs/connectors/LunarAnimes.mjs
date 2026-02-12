@@ -10,6 +10,7 @@ export default class LunarAnimes extends Connector {
         this.tags = ['manga', 'manhwa', 'manhua', 'multi-lingual', 'aggregator'];
         this.url = 'https://lunaranime.ru';
         this.apiUrl = 'https://api.lunaranime.ru/api/manga/';
+        this.requestDelay = 500; // Delay in milliseconds between API requests
 
         this.languageMap = {
             'zh': 'Chinese',
@@ -27,6 +28,10 @@ export default class LunarAnimes extends Connector {
         };
     }
 
+    async _wait() {
+        return new Promise(resolve => setTimeout(resolve, this.requestDelay));
+    }
+
     canHandleURI(uri) {
         return /https?:\/\/lunaranime\.ru\/manga\/[^/]+/.test(uri.href);
     }
@@ -40,6 +45,7 @@ export default class LunarAnimes extends Connector {
     }
 
     async _getMangas() {
+        await this._wait();
         const request = new Request(new URL('search?', this.apiUrl), this.requestOptions);
         const { manga } = await this.fetchJSON(request);
         return manga.map(entry => ({
@@ -49,6 +55,7 @@ export default class LunarAnimes extends Connector {
     }
 
     async _getChapters(manga) {
+        await this._wait();
         const request = new Request(new URL(manga.id, this.apiUrl), this.requestOptions);
         const { data } = await this.fetchJSON(request);
         return data.map(chapter => ({
@@ -59,6 +66,7 @@ export default class LunarAnimes extends Connector {
     }
 
     async _getPages(chapter) {
+        await this._wait();
         const request = new Request(new URL(chapter.id, this.apiUrl), this.requestOptions);
         const { data: { images } } = await this.fetchJSON(request);
         return images;
