@@ -7,10 +7,10 @@ export default class WestManga extends Connector {
         super.id = "westmanga";
         super.label = "WestManga";
         this.tags = ["manga", "manhua", "manhwa", "indonesian"];
-        this.url = "https://westmanga.me";
+        this.url = "https://westmanga.tv";
 
         this.api = {
-            url: "https://data.westmanga.me/api/",
+            url: "https://data.westmanga.tv/api/",
             nonce: "wm-api-request",
             accessKey: "WM_WEB_FRONT_END",
             secretKey: "xxxoidj",
@@ -20,7 +20,7 @@ export default class WestManga extends Connector {
     async _getMangas() {
         const mangaList = [];
         for (let page = 1; ; page++) {
-            const { data } = await this.fetchAPI(`contents?page=${page}`);
+            const { data, paginator } = await this.fetchAPI(`contents?page=${page}&per_page=20&type=Comic`);
             if (!data || !data.length) break;
             mangaList.push(
                 ...data.map(({ slug, title }) => ({
@@ -28,6 +28,7 @@ export default class WestManga extends Connector {
                     title: title.replace(/bahasa indonesia/i, "").trim(),
                 }))
             );
+            if (!paginator || paginator.current_page >= paginator.last_page) break;
         }
         return mangaList;
     }
@@ -52,7 +53,7 @@ export default class WestManga extends Connector {
     }
 
     async _getMangaFromURI(uri) {
-        const slug = uri.pathname.split("/").pop();
+        const slug = uri.pathname.split("/").filter(Boolean).pop();
         const {data: { title }} = await this.fetchAPI(`comic/${slug}`);
         return new Manga(this, slug, title.replace(/bahasa indonesia/i, "").trim());
     }
