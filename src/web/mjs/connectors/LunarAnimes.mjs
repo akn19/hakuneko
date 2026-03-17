@@ -178,15 +178,10 @@ export default class LunarAnimes extends Connector {
     }
 
     async _handleConnectorURI(payload) {
-        await this._acquireSlot();
-        try {
-            const request = new Request(payload.url, this.requestOptions);
-            request.headers.set('x-referer', payload.referer);
-            const response = await fetch(request);
-            const data = await response.blob();
-            return this._blobToBuffer(data);
-        } finally {
-            this._releaseSlot();
-        }
+        const request = new Request(payload.url, this.requestOptions);
+        request.headers.set('x-referer', payload.referer);
+        const response = await fetch(request);
+        const data = await response.blob();
+        return this._blobToBuffer(data);
     }
 }
