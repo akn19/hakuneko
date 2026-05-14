@@ -121,9 +121,12 @@ export default class LunarAnimes extends Connector {
             throw new Error('Chapter is password-protected and cannot be downloaded.');
         }
 
-        const chapterUrl = `${this.url}/manga/${chapterInfo.slug}/${chapterInfo.chapter}`;
+        const chapterUrl = `${this.url}/manga/${chapterInfo.slug}/${chapterInfo.chapter}?lang=${chapterInfo.lang}`;
         const request = new Request(chapterUrl, this.requestOptions);
         const response = await fetch(request);
+        if (!response.ok) {
+            throw new Error(`Failed to fetch chapter page: ${response.status} ${response.statusText}`);
+        }
         const html = await response.text();
 
         const seeds = this._extractSeeds(html);
