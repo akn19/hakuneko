@@ -53,7 +53,7 @@ export default class SoulsSans extends Connector {
         return data.units.map(unit => {
             return {
                 id: unit.slug,
-                title: unit.title
+                title: unit.number ? `Chapter ${Number(unit.number)}` : unit.title
             };
         });
     }
