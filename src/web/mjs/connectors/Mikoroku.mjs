@@ -8,8 +8,10 @@ export default class Mikoroku extends Connector {
         super.label = 'Mikoroku';
         this.tags = [ 'manga', 'scanlation', 'indonesian' ];
         this.url = 'https://mikoroku.com';
+        this.githubList = 'https://raw.githubusercontent.com/moemaomao/mymangadata/main/all-manga.json';
         this.seriesFeed = 'https://www.mikoroku.top';
         this.chapterFeed = 'https://www.mikodrive.my.id';
+        this.chapterFeed2 = 'https://www.yomidays.my.id';
         this.firestore = 'https://firestore.googleapis.com/v1/projects/mikoroku/databases/(default)/documents/manga';
         this.apiKey = 'AIzaSyAi8z8oGGNJSNe87UVWh3FagJZSy_uhuoI';
     }
@@ -19,12 +21,13 @@ export default class Mikoroku extends Connector {
     }
 
     async _getMangas() {
-        const [ firestoreMangas, bloggerMangas ] = await Promise.allSettled([
+        const [ githubMangas, firestoreMangas, bloggerMangas ] = await Promise.allSettled([
+            this._getMangasFromGitHub(),
             this._getMangasFromFirestore(),
             this._getMangasFromBlogger()
         ]);
         const mangaList = [];
-        for(const result of [ firestoreMangas, bloggerMangas ]) {
+        for(const result of [ githubMangas, firestoreMangas, bloggerMangas ]) {
             if(result.status === 'fulfilled') {
                 mangaList.push(...result.value);
             }
@@ -32,6 +35,17 @@ export default class Mikoroku extends Connector {
         return mangaList.filter((manga, index) => {
             return index === mangaList.findIndex(entry => entry.id === manga.id);
         });
+    }
+
+    async _getMangasFromGitHub() {
+        const request = new Request(new URL(this.githubList), this.requestOptions);
+        const list = await this.fetchJSON(request);
+        return (Array.isArray(list) ? list : [])
+            .filter(item => item && item.title && item.slug && !this._isNovel(item.type))
+            .map(item => ({
+                id: this._createMangaID(item.slug),
+                title: String(item.title).trim()
+            }));
     }
 
     async _getMangasFromFirestore() {
@@ -67,42 +81,86 @@ export default class Mikoroku extends Connector {
     }
 
     async _getMangasFromBlogger() {
-        const uri = new URL('/feeds/posts/default', this.seriesFeed);
-        uri.searchParams.set('alt', 'json');
-        uri.searchParams.set('max-results', '500');
-        const request = new Request(uri, this.requestOptions);
-        const { feed } = await this.fetchJSON(request);
-        return (feed.entry || [])
-            .filter(entry => this._hasCategory(entry, [ 'Manga', 'Manhua', 'Manhwa' ]))
-            .map(entry => {
-                const title = entry.title.$t.trim();
-                return {
-                    id: this._createMangaID(this._slugify(title)),
-                    title
-                };
-            });
+        try {
+            const uri = new URL('/feeds/posts/default', this.seriesFeed);
+            uri.searchParams.set('alt', 'json');
+            uri.searchParams.set('max-results', '500');
+            const request = new Request(uri, this.requestOptions);
+            const { feed } = await this.fetchJSON(request);
+            return (feed.entry || [])
+                .filter(entry => this._hasCategory(entry, [ 'Manga', 'Manhua', 'Manhwa' ]))
+                .map(entry => {
+                    const title = entry.title.$t.trim();
+                    return {
+                        id: this._createMangaID(this._slugify(title)),
+                        title
+                    };
+                });
+        } catch(error) {
+            return [];
+        }
     }
 
     async _getChapters(manga) {
         const slug = this._getMangaSlug(manga.id);
-        const firestoreManga = await this._getFirestoreManga(slug);
-        if(firestoreManga) {
-            const chapters = this._getChaptersFromFirestore(manga, firestoreManga);
-            if(chapters.length) {
-                return chapters;
+        try {
+            const firestoreManga = await this._getFirestoreManga(slug);
+            if(firestoreManga) {
+                const chapters = await this._getChaptersFromFirestore(manga, slug, firestoreManga);
+                if(chapters.length) {
+                    return chapters;
+                }
             }
+        } catch(error) {
+            // Firestore quota may be exceeded, fall through to Blogger feeds
         }
         return this._getChaptersFromBlogger(manga);
     }
 
-    _getChaptersFromFirestore(manga, firestoreManga) {
-        return Object.entries(firestoreManga.chapters || {})
-            .map(([ key, value ]) => {
+    async _getChaptersFromFirestore(manga, slug, firestoreManga) {
+        try {
+            const subChapters = await this._getChaptersFromFirestoreSubcollection(slug);
+            if(subChapters.length) {
+                return this._mapFirestoreChapters(manga, subChapters, firestoreManga.updatedAt || 0);
+            }
+        } catch(error) {
+            // subcollection fetch failed (e.g. quota exceeded), fall back to embedded map
+        }
+        return this._mapFirestoreChapters(manga, Object.entries(firestoreManga.chapters || {}).map(([ key, value ]) => ({ key, value })), firestoreManga.updatedAt || 0);
+    }
+
+    async _getChaptersFromFirestoreSubcollection(slug) {
+        const chapters = [];
+        let pageToken = undefined;
+        do {
+            const uri = new URL(`${this.firestore}/${encodeURIComponent(slug)}/chapters`);
+            uri.searchParams.set('key', this.apiKey);
+            uri.searchParams.set('pageSize', '300');
+            if(pageToken) {
+                uri.searchParams.set('pageToken', pageToken);
+            }
+            const request = new Request(uri, this.requestOptions);
+            const data = await this.fetchJSON(request);
+            for(const document of data.documents || []) {
+                const key = this._getSlugFromDocumentName(document.name);
+                const value = this._decodeFirestoreFields(document.fields);
+                if(value && value.isDraft !== true) {
+                    chapters.push({ key, value });
+                }
+            }
+            pageToken = data.nextPageToken;
+        } while(pageToken);
+        return chapters;
+    }
+
+    _mapFirestoreChapters(manga, entries, fallbackDate = 0) {
+        return entries
+            .map(({ key, value }) => {
                 const chapter = {
                     num: value.num || key,
                     title: value.title || `Chapter ${key}`,
                     order: value.order || parseFloat(key) || 0,
-                    date: value.updatedAt || value.createdAt || value.date || value.timestamp || firestoreManga.updatedAt || 0,
+                    date: value.updatedAt || value.createdAt || value.date || value.timestamp || fallbackDate || 0,
                     images: this._extractImages(value.images || value.content || value.html || ''),
                     thumbnail: value.thumbnail || '',
                     source: 'firestore'
@@ -118,16 +176,25 @@ export default class Mikoroku extends Connector {
     }
 
     async _getChaptersFromBlogger(manga) {
-        let data;
-        try {
-            data = await this._getBloggerChaptersByLabel(manga.title);
-        } catch(error) {
-            data = {};
+        for(const base of [ this.chapterFeed, this.chapterFeed2 ]) {
+            for(const fetcher of [ '_getBloggerChaptersByLabel', '_getBloggerChaptersByQuery' ]) {
+                try {
+                    const data = await this[fetcher](manga.title, base);
+                    if(data.feed && data.feed.entry) {
+                        const chapters = this._mapBloggerChapters(manga, data);
+                        if(chapters.length) {
+                            return chapters;
+                        }
+                    }
+                } catch(error) {
+                    // try next feed / query mode
+                }
+            }
         }
-        if(!data.feed || !data.feed.entry) {
-            data = await this._getBloggerChaptersByQuery(manga.title);
-        }
+        return [];
+    }
 
+    _mapBloggerChapters(manga, data) {
         return (data.feed.entry || [])
             .map(entry => {
                 const title = entry.title.$t.trim();
@@ -161,16 +228,16 @@ export default class Mikoroku extends Connector {
             });
     }
 
-    async _getBloggerChaptersByLabel(title) {
-        const uri = new URL(`/feeds/posts/default/-/${encodeURIComponent(title)}`, this.chapterFeed);
+    async _getBloggerChaptersByLabel(title, base = this.chapterFeed) {
+        const uri = new URL(`/feeds/posts/default/-/${encodeURIComponent(title)}`, base);
         uri.searchParams.set('alt', 'json');
         uri.searchParams.set('max-results', '500');
         const request = new Request(uri, this.requestOptions);
         return this.fetchJSON(request);
     }
 
-    async _getBloggerChaptersByQuery(title) {
-        const uri = new URL('/feeds/posts/default', this.chapterFeed);
+    async _getBloggerChaptersByQuery(title, base = this.chapterFeed) {
+        const uri = new URL('/feeds/posts/default', base);
         uri.searchParams.set('alt', 'json');
         uri.searchParams.set('max-results', '500');
         uri.searchParams.set('q', title);
@@ -185,9 +252,18 @@ export default class Mikoroku extends Connector {
 
     async _getMangaFromURI(uri) {
         const slug = this._getSlugFromURI(uri);
-        const firestoreManga = await this._getFirestoreManga(slug);
-        if(firestoreManga) {
-            return new Manga(this, this._createMangaID(slug), firestoreManga.title);
+        const githubManga = await this._getGitHubManga(slug);
+        if(githubManga) {
+            return new Manga(this, this._createMangaID(slug), githubManga.title);
+        }
+
+        try {
+            const firestoreManga = await this._getFirestoreManga(slug);
+            if(firestoreManga && firestoreManga.title) {
+                return new Manga(this, this._createMangaID(slug), firestoreManga.title);
+            }
+        } catch(error) {
+            // Firestore quota may be exceeded, fall through to Blogger feeds
         }
 
         const bloggerManga = await this._getBloggerManga(slug);
@@ -197,6 +273,20 @@ export default class Mikoroku extends Connector {
 
         const title = slug.split('-').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
         return new Manga(this, this._createMangaID(slug), title);
+    }
+
+    async _getGitHubManga(slug) {
+        if(!slug) {
+            return undefined;
+        }
+        try {
+            const request = new Request(new URL(this.githubList), this.requestOptions);
+            const list = await this.fetchJSON(request);
+            const entry = (Array.isArray(list) ? list : []).find(item => item && item.slug === slug);
+            return entry ? { title: String(entry.title).trim() } : undefined;
+        } catch(error) {
+            return undefined;
+        }
     }
 
     async _getFirestoreManga(slug) {
@@ -218,13 +308,20 @@ export default class Mikoroku extends Connector {
     }
 
     async _getBloggerManga(slug) {
-        const uri = new URL('/feeds/posts/default', this.seriesFeed);
-        uri.searchParams.set('alt', 'json');
-        uri.searchParams.set('max-results', '500');
-        const request = new Request(uri, this.requestOptions);
-        const { feed } = await this.fetchJSON(request);
-        const entry = (feed.entry || []).find(entry => this._slugify(entry.title.$t) === slug);
-        return entry ? { title: entry.title.$t.trim() } : undefined;
+        if(!slug) {
+            return undefined;
+        }
+        try {
+            const uri = new URL('/feeds/posts/default', this.seriesFeed);
+            uri.searchParams.set('alt', 'json');
+            uri.searchParams.set('max-results', '500');
+            const request = new Request(uri, this.requestOptions);
+            const { feed } = await this.fetchJSON(request);
+            const entry = (feed.entry || []).find(entry => this._slugify(entry.title.$t) === slug);
+            return entry ? { title: entry.title.$t.trim() } : undefined;
+        } catch(error) {
+            return undefined;
+        }
     }
 
     _decodeFirestoreFields(fields = {}) {
