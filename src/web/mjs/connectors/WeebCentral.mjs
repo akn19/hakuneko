@@ -9,7 +9,7 @@ export default class WeebCentral extends Connector {
         super.label = 'Weeb Central';
         this.tags = [ 'manga', 'manhua', 'manhwa', 'english' ];
         this.url = 'https://weebcentral.com';
-        this.requestOptions.headers.set('x-referer', new URL(this.url).href);
+        this.requestOptions.headers.set('x-referer', this.url);
     }
 
     async _getMangaFromURI(uri) {
@@ -43,8 +43,9 @@ export default class WeebCentral extends Connector {
     }
 
     async _getChapters(manga) {
-        const serieId = manga.id.match(/(\/series\/[^/]+)\//)[1];
-        const uri = new URL(`${serieId}/full-chapter-list`, this.url);
+        const match = manga.id.match(/(\/series\/[^/]+)/);
+        const serieId = match ? match[1] : manga.id;
+        const uri = new URL(serieId + '/full-chapter-list', this.url);
         const request = new Request(uri, this.requestOptions);
         const data = await this.fetchDOM(request, 'a[href*="/chapters/"]');
         return data.map(element => {
@@ -57,22 +58,11 @@ export default class WeebCentral extends Connector {
     }
 
     async _getPages(chapter) {
-        const uri = new URL(chapter.id, this.url);
+        const chapterId = chapter.id.replace(/\/$/, '');
+        const uri = new URL(chapterId + '/images?is_prev=False', this.url);
         const request = new Request(uri, this.requestOptions);
-
-        const pageScript = `
-            new Promise((resolve, reject) => {
-                setTimeout(() => {
-                    try {
-                        resolve([...document.querySelectorAll('main section img[alt*="Page"]:not([x-show])')].map(img => img.src));
-                    } catch(error) {
-                        reject(error);
-                    }
-                }, 2500);
-            });
-        `;
-
-        const data = await Engine.Request.fetchUI(request, pageScript);
+        // NOTE: fetchDOM mengganti <img> menjadi <source>, jadi selector harus pakai 'source'
+        const data = await this.fetchDOM(request, '#chapter-images source');
         return data.map(element => this.createConnectorURI(this.getAbsolutePath(element, request.url)));
     }
 }
