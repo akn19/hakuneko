@@ -21,13 +21,14 @@ export default class Mikoroku extends Connector {
     }
 
     async _getMangas() {
-        const [ githubMangas, firestoreMangas, bloggerMangas ] = await Promise.allSettled([
+        const [ githubMangas, firestoreMangas, bloggerMangas, sdkMangas ] = await Promise.allSettled([
             this._getMangasFromGitHub(),
             this._getMangasFromFirestore(),
-            this._getMangasFromBlogger()
+            this._getMangasFromBlogger(),
+            this._getMangasFromSDK()
         ]);
         const mangaList = [];
-        for(const result of [ githubMangas, firestoreMangas, bloggerMangas ]) {
+        for(const result of [ githubMangas, firestoreMangas, bloggerMangas, sdkMangas ]) {
             if(result.status === 'fulfilled') {
                 mangaList.push(...result.value);
             }
@@ -98,6 +99,28 @@ export default class Mikoroku extends Connector {
             pageToken = data.nextPageToken;
         } while(pageToken);
         return mangaList;
+    }
+
+    /**
+     * List the whole 'manga' collection through the website's own Firebase
+     * SDK (same approach as the official site's fallbackFetch). This is the
+     * most complete source: the REST endpoint above is throttled and the
+     * Blogger series feed domain is dead, while the SDK runs on top of a
+     * mikoroku.com page so the API key origin matches exactly like the site.
+     */
+    async _getMangasFromSDK() {
+        try {
+            const docs = await this._runFirebaseScript('mangas') || [];
+            return docs
+                .filter(doc => doc && doc.slug && doc.title && !this._isNovel(doc.type))
+                .map(doc => ({
+                    id: this._createMangaID(doc.slug),
+                    title: String(doc.title).trim()
+                }));
+        } catch(error) {
+            console.warn(`${this.label}: SDK manga list failed:`, error && error.message || error);
+            return [];
+        }
     }
 
     async _getMangasFromBlogger() {
@@ -356,6 +379,21 @@ export default class Mikoroku extends Connector {
                     }
                     return app.firestore();
                 }
+                function listMangas(db) {
+                    return db.collection('manga').get().then(function(snap) {
+                        var list = [];
+                        snap.forEach(function(doc) {
+                            try {
+                                var d = doc.data() || {};
+                                if(d.isDraft === true) return;
+                                var title = str(d.title);
+                                if(!title) return;
+                                list.push({ slug: str(doc.id), title: title, type: str(d.type) });
+                            } catch(e) { /* skip malformed doc */ }
+                        });
+                        return list;
+                    });
+                }
                 function listChapters(db) {
                     return db.collection('manga').doc(slug).collection('chapters').get().then(function(snap) {
                         var list = [];
@@ -385,7 +423,12 @@ export default class Mikoroku extends Connector {
                 }
                 loadScript('https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js')
                     .then(function() { return loadScript('https://www.gstatic.com/firebasejs/10.14.0/firebase-firestore-compat.js'); })
-                    .then(function() { return op === 'pages' ? chapterImages(getDb()) : listChapters(getDb()); })
+                    .then(function() {
+                        var db = getDb();
+                        if(op === 'pages') return chapterImages(db);
+                        if(op === 'mangas') return listMangas(db);
+                        return listChapters(db);
+                    })
                     .then(function(result) { done(result); })
                     .catch(function() { done(null); });
             });
